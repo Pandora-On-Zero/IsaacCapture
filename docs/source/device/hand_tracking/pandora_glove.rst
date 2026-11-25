@@ -38,9 +38,11 @@ Prerequisites
 
 - **Linux**, x86_64 or aarch64, with the toolchain in
   :doc:`/development/build_from_source/index`.
-- **libpandora**, the ``pandora-c-X.Y.Z-<platform>`` package attached to each
-  ``core-rs-vX.Y.Z`` release, extracted. It holds ``include/pandora/pandora.h``
-  and ``lib/libpandora.so``.
+- **libpandora**, the 01 Glove's C library. Configuring fetches the published
+  ``pandora-c-0.4.0-linux-<arch>`` package from the ``core-rs-v0.4.0`` release
+  of `Pandora-On-Zero/Pandora-Release
+  <https://github.com/Pandora-On-Zero/Pandora-Release/releases>`_ and checks its
+  SHA-256. Offline, extract a package and pass ``-DPANDORA_C_DIR``.
 - **01 Glove(s)** paired with an **01 receiver** plugged into the plugin host.
 - **Each glove calibrated**, with ``pandora calibrate`` (``pip install
   pandora-sdk``) or with the 01 Glove app or Pandora-Web, which store the
@@ -52,8 +54,7 @@ Installation
 
 .. code-block:: bash
 
-   cmake -B build -DBUILD_PLUGINS=ON -DBUILD_PLUGIN_PANDORA_GLOVE=ON \
-       -DPANDORA_C_DIR=/path/to/pandora-c
+   cmake -B build -DBUILD_PLUGINS=ON -DBUILD_PLUGIN_PANDORA_GLOVE=ON
    cmake --build build --target pandora_glove_plugin
    cmake --install build --component pandora_glove
    ./install/plugins/pandora_glove/install_udev_rules.sh

@@ -25,13 +25,18 @@ The plugin owns the receiver; nothing else (the 01 Glove app, `pandora watch
 
 ## Build
 
-Needs libpandora, the 01 Glove's C library: a `pandora-c-X.Y.Z-<platform>`
-package from a `core-rs-vX.Y.Z` release (Linux x86_64 and aarch64), extracted.
+Needs libpandora, the 01 Glove's C library. Configuring fetches the published
+`pandora-c-0.4.0-linux-<arch>` package (x86_64 or aarch64) from the
+[`core-rs-v0.4.0` release](https://github.com/Pandora-On-Zero/Pandora-Release/releases/tag/core-rs-v0.4.0)
+and checks its SHA-256:
 
 ```bash
-cmake -B build -DBUILD_PLUGIN_PANDORA_GLOVE=ON -DPANDORA_C_DIR=/path/to/pandora-c
+cmake -B build -DBUILD_PLUGIN_PANDORA_GLOVE=ON
 cmake --build build --parallel && cmake --install build
 ```
+
+With no network, or for another build of it, extract a package yourself and
+add `-DPANDORA_C_DIR=/path/to/pandora-c`.
 
 The plugin installs to `install/plugins/pandora_glove/` with `libpandora.so`
 beside it. Let it open the receiver without root:

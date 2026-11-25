@@ -42,7 +42,7 @@ if(BUILD_PLUGIN_WUJI_GLOVE)
     add_subdirectory(wuji_glove)
 endif()
 
-# Gated: requires libpandora (set PANDORA_C_DIR to an extracted pandora-c package).
+# Gated: requires libpandora, fetched from its published release (or PANDORA_C_DIR).
 if(BUILD_PLUGIN_PANDORA_GLOVE)
     add_subdirectory(pandora_glove)
 endif()
