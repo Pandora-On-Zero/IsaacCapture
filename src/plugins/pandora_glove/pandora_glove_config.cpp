@@ -109,7 +109,11 @@ WristMode parse_wrist(const std::string& value)
     {
         return WristMode::Imu;
     }
-    bad("--wrist", value, "auto, hand_tracking, controller, fixed or imu");
+    if (value.rfind("se3:", 0) == 0)
+    {
+        return WristMode::Se3;
+    }
+    bad("--wrist", value, "auto, hand_tracking, controller, fixed, imu or se3:<left>,<right>");
 }
 
 } // namespace
@@ -151,14 +155,28 @@ PandoraGloveConfig parse_args(const std::vector<std::string>& args, std::vector<
         else if (take(arg, "--wrist", value))
         {
             config.wrist = parse_wrist(value);
+            if (config.wrist == WristMode::Se3)
+            {
+                const std::string pair = value.substr(4);
+                const auto comma = pair.find(',');
+                if (comma == std::string::npos || comma == 0 || comma + 1 >= pair.size() ||
+                    pair.find(',', comma + 1) != std::string::npos)
+                {
+                    bad("--wrist", value, "se3:<left collection>,<right collection>");
+                }
+                config.se3_left = pair.substr(0, comma);
+                config.se3_right = pair.substr(comma + 1);
+            }
         }
         else if (take(arg, "--left-aim-to-wrist", value))
         {
             config.left_aim_to_wrist = parse_pose("--left-aim-to-wrist", value);
+            config.left_aim_given = true;
         }
         else if (take(arg, "--right-aim-to-wrist", value))
         {
             config.right_aim_to_wrist = parse_pose("--right-aim-to-wrist", value);
+            config.right_aim_given = true;
         }
         else if (take(arg, "--datasets", value))
         {
@@ -213,6 +231,43 @@ PandoraGloveConfig parse_args(const std::vector<std::string>& args, std::vector<
         }
     }
     return config;
+}
+
+std::optional<TrackerMountReply> parse_tracker_offset_reply(const std::string& json)
+{
+    TrackerMountReply out;
+    const auto key = json.find("\"pose\"");
+    const auto open = key == std::string::npos ? std::string::npos : json.find('[', key);
+    const auto close = open == std::string::npos ? std::string::npos : json.find(']', open);
+    if (close == std::string::npos)
+    {
+        return std::nullopt;
+    }
+    std::stringstream values(json.substr(open + 1, close - open - 1));
+    std::string item;
+    size_t n = 0;
+    while (std::getline(values, item, ','))
+    {
+        if (n == out.pose.size())
+        {
+            return std::nullopt;
+        }
+        try
+        {
+            out.pose[n++] = std::stod(item);
+        }
+        catch (const std::exception&)
+        {
+            return std::nullopt;
+        }
+    }
+    if (n != out.pose.size())
+    {
+        return std::nullopt;
+    }
+    const auto stored = json.find("\"stored\"");
+    out.stored = stored != std::string::npos && json.find("true", stored) == json.find_first_not_of(" :", stored + 8);
+    return out;
 }
 
 const std::vector<std::string>& joint_names()

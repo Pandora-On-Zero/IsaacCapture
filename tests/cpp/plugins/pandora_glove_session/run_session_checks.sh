@@ -18,6 +18,7 @@ FAKE_PID=""
 FAILED=()
 
 start_fake() {
+    rm -f "$LINK"
     python3 -I "$FAKE" "${RECORDINGS[@]}" --link "$LINK" --profiles-dir "$PROFILES" \
         --command-log "$WORK/commands.jsonl" "$@" >> "$WORK/fake.log" 2>&1 &
     FAKE_PID=$!
@@ -51,7 +52,9 @@ run() {
 start_fake --rate 200
 run "90 Hz, fixed wrist" --seconds=6 --expect-rate=90 --rate=90 --wrist=fixed --datasets=hand,joints
 run "200 Hz, IMU wrist" --seconds=6 --expect-rate=200 --rate=200 --wrist=imu --datasets=hand,joints
-run "every frame, controller wrist" --seconds=6 --expect-rate=200 --rate=max --wrist=controller --datasets=hand,joints
+# No offset stored: the glove's zero offset places the hand root on the controller itself.
+run "every frame, controller wrist" --seconds=6 --expect-rate=200 --rate=max --wrist=controller --datasets=hand,joints \
+    --expect-offset=0,0,0,0,0,0
 stop_fake
 
 # 4: haptics: scripted commands through HapticCommandReaderTracker to the receiver
@@ -98,6 +101,16 @@ start_fake --rate 200
     --profiles-dir "$PROFILES" --rate 200 >> "$WORK/fake.log" 2>&1 & echo $! > "$WORK/second.pid" ) &
 run "receiver unplugged 2.5-4.5 s" --seconds=8 --rate=200 --wrist=fixed --datasets=hand,joints
 kill "$(cat "$WORK/second.pid" 2>/dev/null)" 2>/dev/null
+stop_fake
+
+# 7-8: the hand placed on a tracker through the glove's stored offset, held through a loss
+OFFSET="-2,-3.5,5,0,-15,0"
+start_fake --rate 200 --tracker-offset="$OFFSET"
+run "controller wrist with the glove's offset, tracker lost 2-3.5 s" --seconds=5 --rate=200 --wrist=controller \
+    --datasets=hand,joints --tracker-loss=2:3.5 --expect-offset="$OFFSET"
+run "SE3 tracker wrist with the glove's offset, tracker lost 2-2.5 s" --seconds=4 --rate=200 \
+    --wrist=se3:fake_tracker_left,fake_tracker_right --datasets=hand,joints --tracker-loss=2:2.5 \
+    --expect-offset="$OFFSET"
 stop_fake
 
 echo

@@ -57,6 +57,7 @@ std::optional<core::WristTrackingSourceConfig> wrist_pull(const PandoraGloveConf
         return out;
     case WristMode::Fixed:
     case WristMode::Imu:
+    case WristMode::Se3:
         return std::nullopt;
     }
     return std::nullopt;
@@ -91,12 +92,23 @@ PandoraGlovePlugin::PandoraGlovePlugin(const PandoraGloveConfig& config, const c
 {
     m_hands[0].is_left = true;
     m_hands[1].is_left = false;
+    std::vector<std::shared_ptr<core::ITracker>> trackers;
     for (auto& hand : m_hands)
     {
         hand.haptics = HapticStream(m_config.haptic_hold);
+        pandora_hand_placer* placer = nullptr;
+        if (pandora_hand_placer_new(hand.is_left ? PANDORA_LEFT : PANDORA_RIGHT, -1.0, &placer) != PANDORA_OK)
+        {
+            throw std::runtime_error(std::string("PandoraGlovePlugin: ") + pandora_last_error());
+        }
+        hand.placer.reset(placer);
+        if (m_config.wrist == WristMode::Se3)
+        {
+            hand.se3 = std::make_shared<core::Se3Tracker>(hand.is_left ? m_config.se3_left : m_config.se3_right);
+            trackers.push_back(hand.se3);
+        }
     }
 
-    std::vector<std::shared_ptr<core::ITracker>> trackers;
     if (m_config.haptics)
     {
         // A command older than a few holds is the producer having gone away: stop the motors.
@@ -231,6 +243,8 @@ void PandoraGlovePlugin::close_receiver(const char* why)
         hand.hand_channel.reset();
         hand.has_frame = false;
         hand.last_seq = -1;
+        // Read the offset again once the glove is back: its profile may have changed.
+        hand.mount_device.clear();
     }
 }
 
@@ -286,17 +300,84 @@ XrPosef PandoraGlovePlugin::wrist_pose(Hand& hand, const pandora_hand_frame& fra
         tracked = true;
         return pose;
     }
+    case WristMode::Se3:
+    {
+        std::optional<XrPosef> tracker;
+        const auto& data = hand.se3->get_data(m_session->pull_channel());
+        const core::Se3TrackerPose* sample = data.get();
+        if (sample != nullptr && sample->is_valid() && sample->pose() != nullptr)
+        {
+            const core::Pose& p = *sample->pose();
+            tracker = XrPosef{ { p.orientation().x(), p.orientation().y(), p.orientation().z(), p.orientation().w() },
+                               { p.position().x(), p.position().y(), p.position().z() } };
+        }
+        return placed_wrist(hand, frame, tracker, tracked);
+    }
     default:
         break;
     }
     const core::WristTrackingSample sample = m_session->pull_channel().wrist_tracking_source().query(
         hand.is_left ? XR_HAND_LEFT_EXT : XR_HAND_RIGHT_EXT, now_ns);
+    if (uses_glove_offset(hand))
+    {
+        // The source answers the controller's aim pose itself (an identity offset):
+        // the glove's stored offset and libpandora's placer take it from there.
+        return placed_wrist(hand, frame, sample.tracked ? std::optional<XrPosef>(sample.pose) : std::nullopt, tracked);
+    }
     if (sample.valid)
     {
         hand.last_wrist = sample.pose;
         tracked = sample.tracked;
     }
     return hand.last_wrist;
+}
+
+bool PandoraGlovePlugin::uses_glove_offset(const Hand& hand) const
+{
+    return m_config.wrist == WristMode::Controller &&
+           !(hand.is_left ? m_config.left_aim_given : m_config.right_aim_given);
+}
+
+XrPosef PandoraGlovePlugin::placed_wrist(Hand& hand,
+                                         const pandora_hand_frame& frame,
+                                         const std::optional<XrPosef>& tracker,
+                                         bool& tracked)
+{
+    const double t_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - m_start).count();
+    const PandoraPose tracker_pose = tracker ? to_pandora_pose(*tracker) : PandoraPose{};
+    PandoraPose root{};
+    int32_t state = PANDORA_PLACEMENT_NONE;
+    if (pandora_hand_placer_update(hand.placer.get(), t_s, tracker ? tracker_pose.data() : nullptr,
+                                   frame.has_wrist ? frame.wrist_deg : nullptr, hand.mount.data(), root.data(),
+                                   &state) != PANDORA_OK)
+    {
+        m_logger->warn("placing the {} hand failed: {}", side(hand.is_left), pandora_last_error());
+        return hand.last_wrist;
+    }
+    if (state != PANDORA_PLACEMENT_NONE)
+    {
+        hand.last_wrist = compose_poses(from_pandora_pose(root), wrist_in_root(frame.bones, hand.is_left));
+    }
+    // Held through a loss, the joints stay valid but are not tracked.
+    tracked = state == PANDORA_PLACEMENT_TRACKED;
+    return hand.last_wrist;
+}
+
+void PandoraGlovePlugin::load_mount(Hand& hand)
+{
+    hand.mount_device = hand.device;
+    hand.mount = PandoraPose{ 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0 };
+    const std::string reply = read_text([this, &hand](char* out, size_t len, size_t* needed)
+                                        { return pandora_tracker_offset(m_rx, hand.device.c_str(), out, len, needed); });
+    const auto mount = parse_tracker_offset_reply(reply);
+    if (!mount)
+    {
+        m_logger->warn(
+            "{}: no tracker offset ({}); the hand sits on the tracker itself", hand.device, pandora_last_error());
+        return;
+    }
+    hand.mount = mount->pose;
+    m_logger->info("{}: {} tracker offset", hand.device, mount->stored ? "its stored" : "no stored, so a zero");
 }
 
 void PandoraGlovePlugin::push_hand(Hand& hand, const pandora_hand_frame& frame, int64_t now_ns)
@@ -347,6 +428,10 @@ void PandoraGlovePlugin::update_hand(Hand& hand, int64_t now_ns)
         hand.last_new_frame = now;
         hand.has_frame = true;
         hand.device.assign(frame.device, strnlen(frame.device, sizeof(frame.device)));
+        if (hand.device != hand.mount_device && (m_config.wrist == WristMode::Se3 || uses_glove_offset(hand)))
+        {
+            load_mount(hand);
+        }
         if (m_config.hands)
         {
             push_hand(hand, frame, now_ns);

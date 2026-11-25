@@ -25,6 +25,19 @@ using HandJoints = std::array<XrHandJointLocationEXT, XR_HAND_JOINT_COUNT_EXT>;
 // places the hand with compose_on_wrist().
 HandJoints map_bones_to_openxr(const PandoraBones& bones, bool is_left);
 
+// libpandora's pose: x, y, z (metres), then qw, qx, qy, qz; OpenVR axes, which are OpenXR's.
+using PandoraPose = std::array<double, 7>;
+
+XrPosef from_pandora_pose(const PandoraPose& pose);
+PandoraPose to_pandora_pose(const XrPosef& pose);
+
+// `b` (a pose in `a`'s frame) composed onto `a`.
+XrPosef compose_poses(const XrPosef& a, const XrPosef& b);
+
+// The OpenXR WRIST joint's pose in the hand root's frame (libpandora's
+// placement gives the root), in the same basis as map_bones_to_openxr.
+XrPosef wrist_in_root(const PandoraBones& bones, bool is_left);
+
 // Place wrist-relative joints at `wrist` (a pose in the session base space).
 // TRACKED bits are added when `tracked` is true.
 void compose_on_wrist(HandJoints& joints, const XrPosef& wrist, bool tracked);

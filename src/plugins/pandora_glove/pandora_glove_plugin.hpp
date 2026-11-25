@@ -8,6 +8,7 @@
 #include "pandora_haptics.hpp"
 
 #include <deviceio_trackers/haptic_command_reader_tracker.hpp>
+#include <deviceio_trackers/se3_tracker.hpp>
 #include <log_bridge/logger.hpp>
 #include <plugin_utils/plugin_device_status_publisher.hpp>
 #include <pusherio/plugin_session.hpp>
@@ -66,6 +67,13 @@ private:
         std::unique_ptr<core::ISchemaPushChannel> joint_channel;
         HapticStream haptics{ std::chrono::milliseconds(60) };
         uint64_t frames_pushed = 0;
+        //! The tracker this glove is fixed to, in Se3 mode.
+        std::shared_ptr<core::Se3Tracker> se3;
+        //! libpandora's placement: the hand root on the tracker, held with the IMU when it is lost.
+        std::unique_ptr<pandora_hand_placer, void (*)(pandora_hand_placer*)> placer{ nullptr, pandora_hand_placer_free };
+        //! The glove's tracker offset (the root's pose in the tracker's frame) and whose it is.
+        PandoraPose mount{ 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0 };
+        std::string mount_device;
     };
 
     void open_receiver_if_needed();
@@ -75,6 +83,10 @@ private:
     void push_hand(Hand& hand, const pandora_hand_frame& frame, int64_t now_ns);
     void push_joints(Hand& hand, const pandora_hand_frame& frame, int64_t now_ns);
     XrPosef wrist_pose(Hand& hand, const pandora_hand_frame& frame, int64_t now_ns, bool& tracked);
+    //! The wrist from a tracker's pose (std::nullopt when not tracked this frame) through the glove's offset.
+    XrPosef placed_wrist(Hand& hand, const pandora_hand_frame& frame, const std::optional<XrPosef>& tracker, bool& tracked);
+    void load_mount(Hand& hand);
+    bool uses_glove_offset(const Hand& hand) const;
     void play_haptics(Hand& hand);
     void publish_status();
     void log_rates();
@@ -96,6 +108,7 @@ private:
     bool m_status_error_logged = false;
 
     std::array<Hand, 2> m_hands;
+    std::chrono::steady_clock::time_point m_start = std::chrono::steady_clock::now();
     std::chrono::steady_clock::time_point m_rate_window_start{};
 };
 

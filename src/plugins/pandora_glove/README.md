@@ -72,9 +72,9 @@ install/plugins/pandora_glove/pandora_glove_plugin --rate=200
 | Argument | Default | Meaning |
 | --- | --- | --- |
 | `--rate=HZ\|max` | `90` | Frames pushed per hand per second, 1 to 1000; `max` pushes every frame the glove sends |
-| `--wrist=MODE` | `auto` | Where the hands are: `auto` (headset hand tracking, else a controller), `hand_tracking`, `controller`, `fixed` (both hands at a table in front of the origin, for tests) or `imu` (fixed positions, turned by the glove's own wrist IMU) |
-| `--left-aim-to-wrist=px,py,pz,qx,qy,qz,qw` | identity | Controller aim pose to wrist, for a controller mounted on the glove; measure it for your mount |
-| `--right-aim-to-wrist=...` | identity | The same for the right hand |
+| `--wrist=MODE` | `auto` | Where the hands are: `auto` (headset hand tracking, else a controller), `hand_tracking`, `controller` (a controller fixed to the glove, through the glove's tracker offset), `se3:<left>,<right>` (an SE3 tracker stream per glove, such as `vive_se3_tracker`'s `vive_tracker_<serial>`, through the glove's tracker offset), `fixed` (both hands at a table in front of the origin, for tests) or `imu` (fixed positions, turned by the glove's own wrist IMU) |
+| `--left-aim-to-wrist=px,py,pz,qx,qy,qz,qw` | the glove's offset in `controller` mode; identity in `auto` | Controller aim pose to wrist: overrides the glove's stored tracker offset in `controller` mode, and is the offset `auto` falls back to |
+| `--right-aim-to-wrist=...` | the glove's offset | The same for the right hand |
 | `--port=PATH` | the receiver plugged in | The receiver's serial port |
 | `--profiles-dir=DIR` | `~/.pandora/profiles` | Where `pandora calibrate` wrote profiles |
 | `--glove-profiles=on\|off` | `on` | Use the calibration stored on a glove that has no profile file |
@@ -83,9 +83,17 @@ install/plugins/pandora_glove/pandora_glove_plugin --rate=200
 | `--haptic-hold-ms=MS` | `60` | How long the glove holds each haptic level; refreshed while a level stays |
 | `--stale-ms=MS` | `200` | A hand with no new frame for this long goes inactive |
 
-The glove has no position of its own: in `auto` and `controller` modes the
-hand is placed on a Quest controller fixed to the glove, or on the headset's
-optical hand tracking.
+The glove has no position of its own. In `controller` and `se3:` modes the hand
+root is placed on the tracker fixed to the glove through the tracker offset the
+glove stores (the 01 Glove app's tracker tab; libpandora's
+`pandora_tracker_offset`), with libpandora's `pandora_hand_placer`: while the
+tracker is lost the hand stays at its last position, turned by the glove's
+wrist IMU for up to a second, then holds still, and its joints are pushed
+without TRACKED bits. The offsets were measured against SteamVR's poses; an
+OpenXR controller's aim pose can differ from SteamVR's pose of the same
+controller, so check the hand's placement and pass `--*-aim-to-wrist` where it
+is off. `auto` uses the headset's optical hand tracking, else the controller
+with `--*-aim-to-wrist`.
 
 ## Data
 

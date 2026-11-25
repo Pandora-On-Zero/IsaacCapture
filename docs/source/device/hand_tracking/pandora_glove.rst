@@ -26,8 +26,12 @@ Data flow
                                                         ◄── HapticCommand ──────  HapticSink
 
 The glove measures its hand's shape and the wrist's orientation, not where the
-hand is. The plugin places the shape on a wrist pose from optical hand tracking
-or a controller fixed to the glove.
+hand is. The plugin places the shape on a wrist pose from optical hand tracking,
+or on a tracker fixed to the glove (a controller, or an SE3 tracker stream such
+as a VIVE Ultimate Tracker's) through the tracker offset the glove stores. While
+that tracker is lost, the hand stays at its last position, turned by the
+glove's wrist IMU for up to a second, then holds still; its joints stay valid
+but are not marked tracked.
 
 Prerequisites
 -------------
@@ -91,12 +95,17 @@ reopens the receiver by itself after it is unplugged.
      - Frames pushed per hand per second, 1 to 1000; ``max`` pushes every frame the glove sends
    * - ``--wrist=MODE``
      - ``auto``
-     - ``auto``, ``hand_tracking``, ``controller``; or, for tests without a headset,
-       ``fixed`` (both hands at a table in front of the origin) and ``imu`` (fixed
-       positions, turned by the glove's wrist IMU)
+     - ``auto``, ``hand_tracking``, ``controller`` (through the glove's tracker
+       offset), ``se3:<left>,<right>`` (an SE3 tracker collection per glove, such as
+       ``vive_tracker_<serial>``, through the glove's tracker offset); or, for tests
+       without a headset, ``fixed`` (both hands at a table in front of the origin)
+       and ``imu`` (fixed positions, turned by the glove's wrist IMU)
    * - ``--left-aim-to-wrist``, ``--right-aim-to-wrist``
-     - identity
-     - Controller aim pose to wrist as ``px,py,pz,qx,qy,qz,qw`` (metres, then quaternion), for your controller mount
+     - the glove's offset
+     - Controller aim pose to wrist as ``px,py,pz,qx,qy,qz,qw`` (metres, then
+       quaternion), overriding the glove's stored offset in ``controller`` mode.
+       The stored offsets are measured against SteamVR's poses, which can differ
+       from OpenXR's aim pose for the same controller
    * - ``--port=PATH``
      - the receiver plugged in
      - The receiver's serial port

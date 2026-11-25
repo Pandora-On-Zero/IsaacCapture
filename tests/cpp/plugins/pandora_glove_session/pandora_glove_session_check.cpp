@@ -17,13 +17,16 @@
 #include <schema/haptic_command_generated.h>
 #include <schema/joint_state_generated.h>
 #include <schema/plugin_device_status_generated.h>
+#include <schema/se3_tracker_generated.h>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <map>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -52,7 +55,26 @@ struct HandPush
     double t;
     bool left;
     HandJoints joints;
+    //! The tracker pose the wrist source or SE3 stream gave last, and whether it was tracked.
+    XrPosef query;
+    bool query_tracked;
 };
+
+// --tracker-loss=FROM:TO: the fake tracker is not tracked in that window (seconds).
+double g_loss_from = -1.0;
+double g_loss_to = -1.0;
+
+bool tracker_lost(double t)
+{
+    return t >= g_loss_from && t < g_loss_to;
+}
+
+// The fake tracker's pose: turning slowly about +Y in front of the origin.
+XrPosef fake_tracker_pose(bool left, double t)
+{
+    const float a = static_cast<float>(0.25 * t);
+    return { { 0.0f, std::sin(a), 0.0f, std::cos(a) }, { left ? -0.2f : 0.2f, 1.3f, -0.3f } };
+}
 
 struct JointSample
 {
@@ -75,6 +97,7 @@ struct Captured
     std::map<std::string, std::vector<JointSample>> joints;
     std::vector<StatusSample> status;
     std::map<bool, XrPosef> last_wrist_query;
+    std::map<bool, bool> last_query_tracked;
     core::PluginSessionRequirements requirements;
     size_t haptic_reads = 0;
 };
@@ -106,7 +129,7 @@ public:
     }
     void push(const XrHandJointLocationEXT* joints, int64_t) override
     {
-        HandPush p{ now_s(), left_, {} };
+        HandPush p{ now_s(), left_, {}, g.last_wrist_query[left_], g.last_query_tracked[left_] };
         std::copy(joints, joints + XR_HAND_JOINT_COUNT_EXT, p.joints.begin());
         g.pushes.push_back(p);
     }
@@ -179,12 +202,13 @@ public:
     core::WristTrackingSample query(XrHandEXT hand, int64_t) override
     {
         const bool left = hand == XR_HAND_LEFT_EXT;
-        const float a = static_cast<float>(0.25 * now_s());
+        const double t = now_s();
         core::WristTrackingSample s;
-        s.pose = { { 0.0f, std::sin(a), 0.0f, std::cos(a) }, { left ? -0.2f : 0.2f, 1.3f, -0.3f } };
+        s.pose = fake_tracker_pose(left, t);
         s.valid = true;
-        s.tracked = true;
+        s.tracked = !tracker_lost(t);
         g.last_wrist_query[left] = s.pose;
+        g.last_query_tracked[left] = s.tracked;
         return s;
     }
 };
@@ -233,6 +257,37 @@ private:
     mutable Slot right_;
 };
 
+// An SE3 tracker stream (vive_se3_tracker's kind): the fake tracker's pose,
+// is_valid false while it is lost.
+class FakeSe3Impl final : public core::ISe3TrackerImpl
+{
+public:
+    explicit FakeSe3Impl(bool left) : left_(left)
+    {
+    }
+    void update(int64_t) override
+    {
+    }
+    const core::Serialized<core::Se3TrackerPose>& get_data() const override
+    {
+        const double t = now_s();
+        const XrPosef p = fake_tracker_pose(left_, t);
+        const bool valid = !tracker_lost(t);
+        flatbuffers::FlatBufferBuilder fbb(128);
+        const core::Pose pose(core::Point(p.position.x, p.position.y, p.position.z),
+                              core::Quaternion(p.orientation.x, p.orientation.y, p.orientation.z, p.orientation.w));
+        fbb.Finish(core::CreateSe3TrackerPose(fbb, &pose, valid));
+        data_ = core::Serialized<core::Se3TrackerPose>::adopt(fbb);
+        g.last_wrist_query[left_] = p;
+        g.last_query_tracked[left_] = valid;
+        return data_;
+    }
+
+private:
+    bool left_;
+    mutable core::Serialized<core::Se3TrackerPose> data_;
+};
+
 class FakePull final : public core::IPluginPullChannel
 {
 public:
@@ -247,14 +302,20 @@ public:
         }
         return wrist_;
     }
-    const core::ITrackerImpl& get_tracker_impl(const core::ITracker&) const override
+    const core::ITrackerImpl& get_tracker_impl(const core::ITracker& tracker) const override
     {
+        if (const auto* se3 = dynamic_cast<const core::Se3Tracker*>(&tracker))
+        {
+            return se3->collection_id().find("left") != std::string::npos ? se3_left_ : se3_right_;
+        }
         return haptics_;
     }
 
 private:
     FakeWrist wrist_;
     FakeHapticImpl haptics_;
+    FakeSe3Impl se3_left_{ true };
+    FakeSe3Impl se3_right_{ false };
 };
 
 class FakeSession final : public core::IPluginSession
@@ -375,6 +436,108 @@ double percentile(std::vector<double> v, double p)
     return v[static_cast<size_t>(p * (v.size() - 1))];
 }
 
+// --expect-offset=x,y,z,yaw,pitch,roll: the tracker offset the stand-in receiver gave the gloves.
+std::optional<std::array<double, 6>> g_expect_offset;
+
+// The OpenVR wrist bone relative to the hand root: the same in every frame of
+// the recordings (right; the left is its mirror).
+constexpr double kRightWristBone[7] = { 0.034038, 0.036503, 0.164722, -0.055147, -0.078608, 0.920279, -0.379296 };
+
+XrPosef inverse_pose(const XrPosef& p)
+{
+    const XrQuaternionf qi{ -p.orientation.x, -p.orientation.y, -p.orientation.z, p.orientation.w };
+    const XrPosef rot_only{ qi, { 0.0f, 0.0f, 0.0f } };
+    const XrPosef moved = compose_poses(rot_only, XrPosef{ { 0.0f, 0.0f, 0.0f, 1.0f }, p.position });
+    return { qi, { -moved.position.x, -moved.position.y, -moved.position.z } };
+}
+
+// The OpenXR wrist in the hand root, from the recordings' fixed wrist bone.
+XrPosef wrist_in_root_of(bool left)
+{
+    PandoraBones bones{};
+    for (auto& b : bones)
+    {
+        b[3] = 1.0;
+    }
+    std::copy(std::begin(kRightWristBone), std::end(kRightWristBone), bones[1]);
+    if (left)
+    {
+        bones[1][0] = -bones[1][0];
+        bones[1][5] = -bones[1][5];
+        bones[1][6] = -bones[1][6];
+    }
+    return wrist_in_root(bones, left);
+}
+
+// Where the wrist joint should be for a tracker pose: the tracker composed
+// with the glove's offset (libpandora), then the OpenXR wrist in the root.
+XrPosef expected_wrist(const XrPosef& tracker, bool left)
+{
+    PandoraPose mount{};
+    pandora_tracker_offset_pose(g_expect_offset->data(), mount.data());
+    const PandoraPose t = to_pandora_pose(tracker);
+    PandoraPose root{};
+    pandora_place_on_tracker(t.data(), mount.data(), root.data());
+    return compose_poses(from_pandora_pose(root), wrist_in_root_of(left));
+}
+
+// Glove-offset modes: tracked pushes sit where the offset puts the wrist and
+// are TRACKED; during a loss the position holds and TRACKED clears.
+void check_placement(const std::vector<const HandPush*>& pushes, bool left, const char* name)
+{
+    double worst = 0.0;
+    size_t tracked = 0, held = 0, untracked_flags = 0, moved = 0, turned = 0;
+    const HandPush* loss_start = nullptr;
+    for (const auto* p : pushes)
+    {
+        const auto& w = p->joints[XR_HAND_JOINT_WRIST_EXT].pose;
+        const bool flagged =
+            (p->joints[XR_HAND_JOINT_INDEX_TIP_EXT].locationFlags & XR_SPACE_LOCATION_POSITION_TRACKED_BIT) != 0;
+        if (p->query_tracked)
+        {
+            loss_start = nullptr;
+            ++tracked;
+            const XrPosef want = expected_wrist(p->query, left);
+            const V d = sub(w.position, want.position);
+            worst = std::max(worst, std::sqrt(dot(d, d)));
+            if (!flagged)
+                ++untracked_flags;
+            continue;
+        }
+        ++held;
+        if (flagged)
+            ++untracked_flags;
+        if (!loss_start)
+        {
+            loss_start = p;
+            continue;
+        }
+        // The hold keeps the hand root (the mount point) still and turns the
+        // hand about it, so it is the root that must not move, not the wrist.
+        const XrPosef root = compose_poses(w, inverse_pose(wrist_in_root_of(left)));
+        const XrPosef start =
+            compose_poses(loss_start->joints[XR_HAND_JOINT_WRIST_EXT].pose, inverse_pose(wrist_in_root_of(left)));
+        const auto& s = loss_start->joints[XR_HAND_JOINT_WRIST_EXT].pose;
+        const V d = sub(root.position, start.position);
+        moved += std::sqrt(dot(d, d)) > 1e-5;
+        turned += std::abs(w.orientation.w - s.orientation.w) + std::abs(w.orientation.y - s.orientation.y) > 1e-4f;
+    }
+    std::printf(
+        "  placement: %zu tracked pushes within %.6f m of tracker x glove offset; %zu during the loss "
+        "(%zu moved, %zu turned by the IMU)\n",
+        tracked, worst, held, moved, turned);
+    if (tracked == 0)
+        fail(std::string(name) + ": no tracked push");
+    if (worst > 1e-4)
+        fail(std::string(name) + ": wrist not where the tracker and the glove's offset put it");
+    if (untracked_flags)
+        fail(std::string(name) + ": TRACKED bits wrong in " + std::to_string(untracked_flags) + " pushes");
+    if (moved)
+        fail(std::string(name) + ": the hand moved while the tracker was lost");
+    if (g_loss_to > g_loss_from && held == 0)
+        fail(std::string(name) + ": no push during the tracker loss");
+}
+
 void report_hand(bool left, const PandoraGloveConfig& config, double seconds, double expect_rate)
 {
     std::vector<const HandPush*> pushes;
@@ -464,6 +627,11 @@ void report_hand(bool left, const PandoraGloveConfig& config, double seconds, do
         if (config.wrist == WristMode::Fixed && turned)
             fail(std::string(name) + ": fixed wrist rotated");
     }
+    else if (g_expect_offset)
+    {
+        check_placement(pushes, left, name);
+        return;
+    }
     else
     {
         const XrPosef q = g.last_wrist_query[left];
@@ -528,6 +696,19 @@ try
             seconds = std::stod(a.substr(10));
         else if (a.rfind("--expect-rate=", 0) == 0)
             expect_rate = std::stod(a.substr(14));
+        else if (a.rfind("--tracker-loss=", 0) == 0)
+        {
+            const std::string span = a.substr(15);
+            g_loss_from = std::stod(span.substr(0, span.find(':')));
+            g_loss_to = std::stod(span.substr(span.find(':') + 1));
+        }
+        else if (a.rfind("--expect-offset=", 0) == 0)
+        {
+            std::array<double, 6> o{};
+            if (std::sscanf(a.c_str() + 16, "%lf,%lf,%lf,%lf,%lf,%lf", &o[0], &o[1], &o[2], &o[3], &o[4], &o[5]) != 6)
+                throw std::runtime_error("--expect-offset is x,y,z,yaw,pitch,roll");
+            g_expect_offset = o;
+        }
         else
             plugin_args.push_back(a);
     }

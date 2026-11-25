@@ -238,6 +238,30 @@ HandJoints map_bones_to_openxr(const PandoraBones& bones, bool is_left)
     return out;
 }
 
+XrPosef from_pandora_pose(const PandoraPose& pose)
+{
+    return to_xr(Pose{ { pose[0], pose[1], pose[2] }, { pose[3], pose[4], pose[5], pose[6] } });
+}
+
+PandoraPose to_pandora_pose(const XrPosef& pose)
+{
+    const Pose p = from_xr(pose);
+    return { p.p.x, p.p.y, p.p.z, p.q.w, p.q.x, p.q.y, p.q.z };
+}
+
+XrPosef compose_poses(const XrPosef& a, const XrPosef& b)
+{
+    return to_xr(compose(from_xr(a), from_xr(b)));
+}
+
+XrPosef wrist_in_root(const PandoraBones& bones, bool is_left)
+{
+    const double* w = bones[1];
+    // The root bone is the root itself; the wrist bone is its child.
+    const Pose wrist{ { w[0], w[1], w[2] }, mul(normalized(Quat{ w[3], w[4], w[5], w[6] }), wrist_basis(is_left)) };
+    return to_xr(wrist);
+}
+
 void compose_on_wrist(HandJoints& joints, const XrPosef& wrist, bool tracked)
 {
     const Pose w = from_xr(wrist);

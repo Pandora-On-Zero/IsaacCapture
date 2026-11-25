@@ -264,10 +264,24 @@ def main() -> None:
         metavar="GLOVE:FROM:TO",
         help="send nothing from glove GLOVE (0-based, in the order given) from FROM to TO seconds",
     )
+    parser.add_argument(
+        "--tracker-offset",
+        metavar="X,Y,Z,YAW,PITCH,ROLL",
+        help="store this tracker mount offset (cm, degrees) in every glove's profile",
+    )
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
 
     gloves = [Glove(path) for path in args.recordings]
+    if args.tracker_offset:
+        keys = ("pos_x", "pos_y", "pos_z", "yaw", "pitch", "roll")
+        values = [float(v) for v in args.tracker_offset.split(",")]
+        if len(values) != len(keys):
+            parser.error("--tracker-offset is x,y,z,yaw,pitch,roll")
+        for glove in gloves:
+            glove.profile.setdefault("sections", {})["TRACKER"] = dict(
+                zip(keys, values)
+            )
     args.profiles_dir.mkdir(parents=True, exist_ok=True)
     for glove in gloves:
         (args.profiles_dir / f"{glove.id}.json").write_text(
