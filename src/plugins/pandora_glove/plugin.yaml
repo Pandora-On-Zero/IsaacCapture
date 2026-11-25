@@ -1,0 +1,14 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 Pandora-On-Zero. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: pandora_glove_plugin
+description: "01 Glove (Pandora-On-Zero) hand tracking and haptics"
+command: "./pandora_glove_plugin"
+version: "1.0.0"
+devices:
+  - path: "/hand/left"
+    type: "hand_tracker"
+    description: "Left 01 Glove"
+  - path: "/hand/right"
+    type: "hand_tracker"
+    description: "Right 01 Glove"

@@ -17,6 +17,11 @@ if(BUILD_PLUGIN_OGLO)
     add_subdirectory(oglo_tactile)
 endif()
 
+if(BUILD_PLUGIN_PANDORA_GLOVE)
+    add_subdirectory(pandora_glove)
+    add_subdirectory(pandora_glove_session)
+endif()
+
 # Defined on Linux whether or not the Manus SDK is present (see src/plugins/manus_calibration/CMakeLists.txt).
 if(TARGET manus_calibration_core)
     add_subdirectory(manus_calibration)

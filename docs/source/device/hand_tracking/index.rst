@@ -13,5 +13,6 @@ and hand exoskeletons. See :doc:`/device/trackers/index` for the common tracking
 
    manus
    wuji_glove
+   pandora_glove
    sharpa_avatar
    haptikos

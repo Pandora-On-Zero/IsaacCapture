@@ -41,6 +41,12 @@ endif()
 if(BUILD_PLUGIN_WUJI_GLOVE)
     add_subdirectory(wuji_glove)
 endif()
+
+# Gated: requires libpandora (set PANDORA_C_DIR to an extracted pandora-c package).
+if(BUILD_PLUGIN_PANDORA_GLOVE)
+    add_subdirectory(pandora_glove)
+endif()
+
 # Gated: Linux + Avatar SDK under /opt/avatar-sdk. Missing SDK skips the plugin.
 if(BUILD_PLUGIN_SHARPA_AVATAR)
     add_subdirectory(sharpa_avatar)
